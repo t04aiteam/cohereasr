@@ -30,7 +30,11 @@ a **2B-parameter Conformer ASR model** that transcribes audio in **14 languages*
 
 ```bash
 git clone <this-repo>
-cd cohere-transcribe-api
+cd cohere_asr
+
+# (recommended) create a virtual environment
+python -m venv .venv && source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
@@ -41,21 +45,17 @@ cp .env.example .env
 # Edit .env — set HF_TOKEN (required) and API_KEY
 ```
 
-### 3. Run locally
+### 3. Run
 
 ```bash
-uvicorn main:app --reload --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000
+# or equivalently:
+python main.py
 ```
 
-The model (~4 GB) is downloaded from the Hub on the first startup. Subsequent starts use the local cache.
-
-### 4. Run with Docker
-
-```bash
-docker-compose up --build
-```
-
-For GPU inference, uncomment the `deploy` block in `docker-compose.yml` and ensure the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) is installed.
+The `.env` file is loaded automatically at startup. The model (~4 GB) is
+downloaded from the Hub on the first startup and cached under
+`~/.cache/huggingface`; subsequent starts use the local cache.
 
 ---
 
@@ -156,9 +156,10 @@ curl -X POST http://localhost:8000/transcribe/file \
 ## Notes & Tips
 
 - **Long audio**: The model automatically chunks audio longer than 35 seconds — no special configuration needed.
-- **Large model**: First startup downloads ~4 GB. Mount `~/.cache/huggingface` as a Docker volume to persist across rebuilds (see commented block in `docker-compose.yml`).
+- **Large model**: First startup downloads ~4 GB to `~/.cache/huggingface`. Subsequent starts load from the cache.
 - **CPU inference**: Transcribing a 1-minute clip takes ~3–5 minutes on CPU. A GPU is strongly recommended for production use.
-- **GPU acceleration**: Set `DEVICE=cuda` (or leave as `auto`) and uncomment the `deploy` block in `docker-compose.yml`.
+- **GPU acceleration**: Used automatically when CUDA is available. Set `DEVICE=cpu` to force CPU inference.
+- **Batch size**: Both endpoints accept an optional `batch_size` parameter to override the default GPU batch size for chunked long-audio inference.
 - **Noise gate**: The model transcribes non-speech sounds. Pre-processing with a VAD (e.g. Silero VAD) is recommended for noisy environments.
 - **No language detection**: You must specify the `language` parameter — the model does not auto-detect it.
 - **Concurrency**: The API uses a single-process, single-model setup. For high-concurrency workloads, consider the vLLM serving integration documented on the [model card](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026).

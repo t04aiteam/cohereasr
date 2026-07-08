@@ -11,10 +11,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from models.loader import load_model
-from routes.transcribe import router as transcribe_router
+# Load .env before importing modules that read env vars at import time
+# (models.loader reads HF_TOKEN, middleware.auth reads API_KEY).
 from dotenv import load_dotenv
 load_dotenv()
+
+from models.loader import load_model
+from routes.transcribe import router as transcribe_router
 
 
 @asynccontextmanager
