@@ -1,0 +1,43 @@
+# Virtual environments (cohere-env is ~9.5 GB — never commit)
+cohere-env/
+venv/
+.venv/
+env/
+
+# Secrets & local configuration
+.env
+.env.*
+!.env.example
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+
+# Model weights & checkpoints (if ever stored locally)
+*.safetensors
+*.bin
+*.ckpt
+*.gguf
+*.onnx
+
+# Audio samples / temporary media
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+
+# Logs & OS/editor noise
+*.log
+.DS_Store
+.idea/
+.vscode/
