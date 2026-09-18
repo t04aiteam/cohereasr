@@ -9,9 +9,9 @@ Transcribe speech to text using `CohereLabs/cohere-transcribe-03-2026`
 POST /transcribe/file
 ```
 
-Base URL (default): `http://localhost:8000`
+Base URL (default): `http://localhost:6221`
 
-Full URL: `http://localhost:8000/transcribe/file`
+Full URL: `http://localhost:6221/transcribe/file`
 
 ---
 
@@ -32,7 +32,7 @@ In Postman, add the header under the **Headers** tab when required:
 ## Postman setup
 
 1. **Method**: `POST`
-2. **URL**: `http://localhost:8000/transcribe/file`
+2. **URL**: `http://localhost:6221/transcribe/file`
 3. **Headers**: add `X-Api-Key` only if the server requires it (see above).
 4. **Body** tab → select **form-data**.
 5. Add the fields:
@@ -98,8 +98,8 @@ Set **Body → raw → JSON**:
 
 ## Quick checks
 
-- **Health probe**: `GET http://localhost:8000/health`
+- **Health probe**: `GET http://localhost:6221/health`
   ```json
   { "status": "ok", "model": "CohereLabs/cohere-transcribe-03-2026" }
   ```
-- **Interactive docs**: open `http://localhost:8000/docs` in a browser.
+- **Interactive docs**: open `http://localhost:6221/docs` in a browser.

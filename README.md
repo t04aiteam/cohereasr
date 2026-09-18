@@ -48,7 +48,7 @@ cp .env.example .env
 ### 3. Run
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 6221
 # or equivalently:
 python main.py
 ```
@@ -66,7 +66,7 @@ downloaded from the Hub on the first startup and cached under
 | `HF_TOKEN` | **Yes** | — | Hugging Face access token for the gated model |
 | `API_KEY` | No | *(empty)* | Protects endpoints via `X-Api-Key` header. Leave empty to disable auth |
 | `MODEL_ID` | No | `CohereLabs/cohere-transcribe-03-2026` | HuggingFace model ID |
-| `DEVICE` | No | auto | Set to `cpu` to force CPU inference |
+| `DEVICE` | No | auto | Set to `cpu` to force CPU inference. Ignored while the `DEVICE` constant in `main.py` is not `None` (currently `"cpu"`: the GPU on the deploy box is shared) |
 
 ---
 
@@ -78,7 +78,7 @@ downloaded from the Hub on the first startup and cached under
 | `POST` | `/transcribe/file` | `X-Api-Key` | Transcribe a multipart audio file upload |
 | `POST` | `/transcribe/base64` | `X-Api-Key` | Transcribe base64-encoded audio in JSON |
 
-Interactive docs available at **http://localhost:8000/docs** once the server is running.
+Interactive docs available at **http://localhost:6221/docs** once the server is running.
 
 ---
 
@@ -87,7 +87,7 @@ Interactive docs available at **http://localhost:8000/docs** once the server is 
 ### Health check
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:6221/health
 ```
 
 ```json
@@ -99,7 +99,7 @@ curl http://localhost:8000/health
 ### Transcribe a file (multipart upload)
 
 ```bash
-curl -X POST http://localhost:8000/transcribe/file \
+curl -X POST http://localhost:6221/transcribe/file \
   -H "X-Api-Key: changeme" \
   -F "file=@/path/to/audio.wav" \
   -F "language=en" \
@@ -122,7 +122,7 @@ curl -X POST http://localhost:8000/transcribe/file \
 # Encode audio to base64
 B64=$(base64 -w 0 /path/to/audio.mp3)
 
-curl -X POST http://localhost:8000/transcribe/base64 \
+curl -X POST http://localhost:6221/transcribe/base64 \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: changeme" \
   -d "{
@@ -145,7 +145,7 @@ curl -X POST http://localhost:8000/transcribe/base64 \
 ### Transcribe French audio
 
 ```bash
-curl -X POST http://localhost:8000/transcribe/file \
+curl -X POST http://localhost:6221/transcribe/file \
   -H "X-Api-Key: changeme" \
   -F "file=@interview.flac" \
   -F "language=fr"
@@ -158,7 +158,7 @@ curl -X POST http://localhost:8000/transcribe/file \
 - **Long audio**: The model automatically chunks audio longer than 35 seconds — no special configuration needed.
 - **Large model**: First startup downloads ~4 GB to `~/.cache/huggingface`. Subsequent starts load from the cache.
 - **CPU inference**: Transcribing a 1-minute clip takes ~3–5 minutes on CPU. A GPU is strongly recommended for production use.
-- **GPU acceleration**: Used automatically when CUDA is available. Set `DEVICE=cpu` to force CPU inference.
+- **GPU acceleration**: `main.py` pins `DEVICE = "cpu"`. Set it to `None` to auto-select CUDA, after which the `DEVICE=cpu` env var applies again.
 - **Batch size**: Both endpoints accept an optional `batch_size` parameter to override the default GPU batch size for chunked long-audio inference.
 - **Noise gate**: The model transcribes non-speech sounds. Pre-processing with a VAD (e.g. Silero VAD) is recommended for noisy environments.
 - **No language detection**: You must specify the `language` parameter — the model does not auto-detect it.
