@@ -17,7 +17,7 @@ _processor = None
 _model = None
 
 
-def load_model():
+def load_model(device=None):
     """
     Download (or load from cache) the processor and model.
     Called once during application startup via the FastAPI lifespan hook.
@@ -26,6 +26,8 @@ def load_model():
     """
     global _processor, _model
 
+    device = device or DEVICE
+
     kwargs = {"trust_remote_code": True}
     if HF_TOKEN:
         kwargs["token"] = HF_TOKEN
@@ -33,9 +35,9 @@ def load_model():
     print(f"[loader] Loading processor for {MODEL_ID} …")
     _processor = AutoProcessor.from_pretrained(MODEL_ID, **kwargs)
 
-    print(f"[loader] Loading model for {MODEL_ID} on {DEVICE} …")
+    print(f"[loader] Loading model for {MODEL_ID} on {device} …")
     _model = AutoModelForSpeechSeq2Seq.from_pretrained(MODEL_ID, **kwargs)
-    _model.to(DEVICE)
+    _model.to(device)
     _model.eval()
 
     print("[loader] Model ready.")

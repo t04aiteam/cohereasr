@@ -4,7 +4,6 @@ Wraps CohereLabs/cohere-transcribe-03-2026 — a 2B-parameter ASR model
 supporting 14 languages. Audio is accepted as file upload or base64 payload.
 """
 
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -19,11 +18,16 @@ load_dotenv()
 from models.loader import load_model
 from routes.transcribe import router as transcribe_router
 
+# Set to "cpu" to force CPU inference (e.g. while the GPU is busy).
+# Set to None to auto-select (CUDA if available), or "cuda:0" to force GPU.
+# Remember to switch this back to None before deploying to prod.
+DEVICE = "cpu"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load the model once at startup; release on shutdown."""
-    load_model()
+    load_model(DEVICE)
     yield
 
 
@@ -66,7 +70,5 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    
-    device=os.environ.get("DEVICE", "cuda" if os.environ.get("USE_CUDA", "1") == "1" else "cpu")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-    
+
+    uvicorn.run(app, host="0.0.0.0", port=6221)
