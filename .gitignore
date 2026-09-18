@@ -41,3 +41,7 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Actual conda env dir on box 222 (underscore) and local token files
+cohere_env/
+etc/
