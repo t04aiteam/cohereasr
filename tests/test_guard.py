@@ -1,4 +1,6 @@
-"""Gate tests for models/guard.py. No model load, runs in well under 2 s.
+"""Gate tests for models/guard.py. No model and no torch import.
+
+SLOW_TESTS=1 adds the real Silero model (imports torch, not a gate test).
 
 Run: cohere_env/bin/python -m unittest discover -s tests -v
 """
@@ -111,6 +113,38 @@ class HallucinationReasonTest(unittest.TestCase):
         self.assertIsNone(guard.hallucination_reason(LOUD, LYRIC))
         self.assertIsNone(guard.hallucination_reason(LOUD, "nhà em ở nơi đó " * 4))
 
+    def test_legit_repetition_is_kept(self):
+        """Review M1: the zlib rule dropped all of these."""
+        chorus = LYRIC + " "
+        counting = " ".join(f"số {i}" for i in range(1, 61))
+        for text in (chorus * 3, chorus * 4, counting, "la " * 7, "na na na " * 9):
+            self.assertIsNone(guard.hallucination_reason(LOUD, text), text[:30])
+
+    def test_batched_loop_from_the_service_is_dropped(self):
+        """The loop the live service returned for the intro of NhaEmOLungDoi.mp3."""
+        text = "Một số người nghiện rằng " + "là người nghiện rằng mình " * 11
+        self.assertIn("x11", guard.hallucination_reason(LOUD, text))
+
+    def test_loop_boundaries(self):
+        """More than RUN_MAX repeats and at least MIN_LOOP_SPAN tokens."""
+        self.assertIsNone(guard.find_loop("a b c d e f g h " * 4))  # 32 tokens, x4
+        self.assertIsNone(guard.find_loop("a b c d e " * 5 + "a b c d"))  # x5, 25 tokens
+        self.assertEqual(guard.find_loop("a b c d e " * 6), (6, "a b c d e"))
+
+    def test_no_space_language_loop(self):
+        """Review M2: zh/ja text has no spaces, the word rule never fired."""
+        self.assertIn("loop", guard.hallucination_reason(LOUD, "明显是一个人" * 60, True))
+        self.assertIn(
+            "loop", guard.hallucination_reason(LOUD, "これは明らかに一人の人です" * 30, True)
+        )
+        self.assertIsNone(guard.hallucination_reason(LOUD, "你好世界，今天天气很好。哈哈哈哈哈", True))
+
+    def test_quiet_sentence_in_silent_chunk_is_kept(self):
+        """Review M3: 2 s at -40 dBFS in 35 s of silence averaged to -52 dBFS."""
+        wave = np.zeros(35 * guard.SR, np.float32)
+        wave[: 2 * guard.SR] = 0.01
+        self.assertIsNone(guard.hallucination_reason(wave, LYRIC))
+
     def test_empty_inputs(self):
         """Empty text is kept, empty audio counts as silence."""
         self.assertIsNone(guard.hallucination_reason(LOUD, ""))
@@ -123,13 +157,21 @@ class PackRegionsTest(unittest.TestCase):
     """Silero region packing."""
 
     def test_groups_cap_and_padding(self):
-        """Regions merge up to 30 s, pad by 0.2 s and clamp to the audio."""
+        """Regions pad by 0.2 s, clamp to the audio and pack up to 30 s of audio."""
         regions = [
             {"start": 0.1, "end": 10},
             {"start": 12, "end": 29},
             {"start": 40, "end": 50},
         ]
-        self.assertEqual(guard.pack_regions(regions, 50.1), [(0.0, 29.2), (39.8, 50.1)])
+        self.assertEqual(
+            guard.pack_regions(regions, 50.1),
+            [[(0.0, 10.2), (11.8, 29.2)], [(39.8, 50.1)]],
+        )
+
+    def test_gap_is_left_out_and_overlap_is_merged(self):
+        """Review L4: music between two regions is not transcribed, no audio twice."""
+        regions = [{"start": 0, "end": 2}, {"start": 28, "end": 30}, {"start": 30.3, "end": 31}]
+        self.assertEqual(guard.pack_regions(regions, 60), [[(0.0, 2.2), (27.8, 31.2)]])
 
     def test_no_speech(self):
         """No regions gives no groups."""
@@ -137,7 +179,8 @@ class PackRegionsTest(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    importlib.util.find_spec("silero_vad"), "silero-vad not installed (optional)"
+    os.getenv("SLOW_TESTS") and importlib.util.find_spec("silero_vad"),
+    "set SLOW_TESTS=1 (needs silero-vad, imports torch)",
 )
 class SileroTest(unittest.TestCase):
     """Real Silero model, no ASR model."""

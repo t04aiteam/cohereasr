@@ -2,4 +2,4 @@
 #   uv pip install --python cohere_env/bin/python --no-deps -r requirements-vad.txt
 silero-vad==6.2.2
 onnxruntime==1.30.0
-flatbuffers
+flatbuffers==25.12.19

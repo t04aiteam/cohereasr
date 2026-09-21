@@ -11,73 +11,128 @@ Silero rates singing as non-speech and would empty a song's transcript.
 """
 
 import os
+import re
 import sys
-import zlib
+import threading
 
 import librosa
 import numpy as np
-import torch
 
 SR = 16000
-CR_MAX = float(
-    os.getenv("GUARD_CR_MAX", "2.4")
-)  # Whisper's compression_ratio_threshold
-MIN_LOOP_WORDS = int(
-    os.getenv("GUARD_MIN_LOOP_WORDS", "50")
-)  # measured loops: 71+ words
+RUN_MAX = 4  # back-to-back repeats a real refrain reaches; measured loops: 11+
+MIN_LOOP_SPAN = 30  # tokens the repeats must cover, keeps "la la la la la la"
 RMS_MIN_DB = float(os.getenv("GUARD_RMS_MIN_DB", "-50"))
 USE_SILERO_VAD = os.getenv("USE_SILERO_VAD", "0") == "1"
 VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.5"))
 VAD_MAX_GROUP_S = 30.0
 VAD_PAD_S = 0.2
 
-_vad_model = None
+_vad = None
+_vad_lock = threading.Lock()
 
 
-def hallucination_reason(wave, text):
+def find_loop(text, by_char=False):
+    """Find a back-to-back repetition long enough to be a decoder loop.
+
+    Args:
+        text: Chunk text or whole transcript.
+        by_char: Compare characters instead of words (languages without spaces).
+
+    Returns:
+        Tuple of (repeat count, phrase) for the loop covering the most tokens, or
+        None when nothing repeats more than RUN_MAX times over MIN_LOOP_SPAN tokens.
+    """
+    tokens = re.findall(r"\w" if by_char else r"\w+", text.lower())
+    best = None
+    # ponytail: exact repeats with a period up to 8 words / 32 characters. A loop with
+    # a longer period or small variations passes; upgrade path is a per-token logprob
+    # check once the decode loop is ours.
+    for p in range(1, (32 if by_char else 8) + 1):
+        matches = (
+            0  # consecutive positions where the next p tokens equal the previous p
+        )
+        for i in range(p, len(tokens) - p + 1):
+            matches = matches + 1 if tokens[i : i + p] == tokens[i - p : i] else 0
+            # k back-to-back copies of a p-token phrase give k*p - 2p + 1 matches
+            reps = 2 + (matches - 1) // p if matches else 1
+            if (
+                reps > RUN_MAX
+                and reps * p >= MIN_LOOP_SPAN
+                and (not best or reps * p > best[0] * best[2])
+            ):
+                best = (reps, ("" if by_char else " ").join(tokens[i : i + p]), p)
+    return best[:2] if best else None
+
+
+def hallucination_reason(wave, text, by_char=False):
     """Decide whether a chunk's text should be dropped.
 
     Args:
-        wave: Chunk waveform.
+        wave: Chunk waveform at 16 kHz.
         text: Text the model produced for it.
+        by_char: Whether the language is written without spaces.
 
     Returns:
         Reason string when the chunk is dropped, else None.
     """
-    rms_db = (
-        20 * np.log10(np.sqrt(np.mean(np.square(wave))) + 1e-9) if len(wave) else -180.0
-    )
+    if not len(wave):
+        return "silence (empty)"
+    # loudest 1 s window, not the chunk mean: one quiet sentence in a silent chunk stays
+    n = len(wave) // SR
+    frames = wave[: n * SR].reshape(n, SR) if n else wave[None, :]
+    rms_db = 20 * np.log10(np.sqrt(np.mean(np.square(frames), axis=1)).max() + 1e-9)
     if rms_db < RMS_MIN_DB:
         return f"silence {rms_db:.0f} dBFS"
-    raw = text.encode()
-    cr = len(raw) / len(zlib.compress(raw)) if raw else 0.0
-    # ponytail: word floor protects short sung refrains ("nhà em ở nơi đó" x4 = cr 2.6).
-    # A 35 s chunk that really repeats one line 10+ times is still dropped; upgrade path
-    # is a per-token logprob check once the decode loop is ours.
-    if cr > CR_MAX and len(text.split()) >= MIN_LOOP_WORDS:
-        return f"loop cr={cr:.1f}"
+    loop = find_loop(text, by_char)
+    if loop:
+        return f"loop {loop[1]!r} x{loop[0]}"
     return None
 
 
 def pack_regions(regions, total_s, max_s=VAD_MAX_GROUP_S, pad_s=VAD_PAD_S):
-    """Merge speech regions into padded groups no longer than max_s.
+    """Pack padded speech regions into groups of at most max_s of audio.
 
     Args:
         regions: List of {"start", "end"} dicts in seconds, sorted.
         total_s: Audio length in seconds.
-        max_s: Longest group before padding.
-        pad_s: Context kept on both sides of a group.
+        max_s: Most audio in one group. One longer region still makes one group.
+        pad_s: Context kept on both sides of a region.
 
     Returns:
-        List of (start_s, end_s) tuples.
+        List of groups, each a list of (start_s, end_s) tuples. The audio between
+        the regions of a group is not part of it.
     """
     groups = []
     for r in regions:
-        if groups and r["end"] - groups[-1][0] <= max_s:
-            groups[-1][1] = r["end"]
+        start, end = max(0.0, r["start"] - pad_s), min(total_s, r["end"] + pad_s)
+        if groups and start <= groups[-1][-1][1]:  # padding overlap: no audio twice
+            groups[-1][-1] = (groups[-1][-1][0], end)
+        elif groups and sum(e - s for s, e in groups[-1]) + end - start <= max_s:
+            groups[-1].append((start, end))
         else:
-            groups.append([r["start"], r["end"]])
-    return [(max(0.0, s - pad_s), min(total_s, e + pad_s)) for s, e in groups]
+            groups.append([(start, end)])
+    return groups
+
+
+def _load_vad():
+    """Import silero_vad and load its model, keeping torch's thread count."""
+    global _vad
+    import torch
+
+    # importing silero_vad calls torch.set_num_threads(1) process-wide, which would
+    # put the ASR model on one core
+    threads = torch.get_num_threads()
+    try:
+        from silero_vad import get_speech_timestamps, load_silero_vad
+    finally:
+        torch.set_num_threads(threads)
+    _vad = (get_speech_timestamps, load_silero_vad())
+
+
+if USE_SILERO_VAD:
+    # at startup, not per request: a missing dependency stops the service start, and
+    # the thread count is back before the first request
+    _load_vad()
 
 
 def vad_chunks(wav):
@@ -89,27 +144,22 @@ def vad_chunks(wav):
     Returns:
         List of waveforms, empty when no speech was found.
     """
-    global _vad_model
-    threads = torch.get_num_threads()
-    from silero_vad import (
-        get_speech_timestamps,
-        load_silero_vad,
-    )  # lazy: optional dependency
+    import torch  # lazy: 1.5 s import the gate tests must not pay
 
-    if _vad_model is None:
-        _vad_model = load_silero_vad()
-    regions = get_speech_timestamps(
-        torch.from_numpy(wav),
-        _vad_model,
-        sampling_rate=SR,
-        threshold=VAD_THRESHOLD,
-        return_seconds=True,
-    )
-    # importing silero_vad calls torch.set_num_threads(1) process-wide, which would
-    # put the ASR model on one core
-    torch.set_num_threads(threads)
+    with _vad_lock:  # the Silero model keeps state between frames
+        if _vad is None:
+            _load_vad()
+        get_speech_timestamps, vad_model = _vad
+        regions = get_speech_timestamps(
+            torch.from_numpy(wav),
+            vad_model,
+            sampling_rate=SR,
+            threshold=VAD_THRESHOLD,
+            return_seconds=True,
+        )
     return [
-        wav[int(s * SR) : int(e * SR)] for s, e in pack_regions(regions, len(wav) / SR)
+        np.concatenate([wav[int(s * SR) : int(e * SR)] for s, e in group])
+        for group in pack_regions(regions, len(wav) / SR)
     ]
 
 
@@ -131,6 +181,8 @@ def transcribe_guarded(
         The joined text of the chunks that were kept.
     """
     wav = audio_array
+    if not len(wav):
+        return ""
     if sample_rate != SR:
         wav = librosa.resample(wav, orig_sr=sample_rate, target_sr=SR)
     pieces = vad_chunks(wav) if USE_SILERO_VAD else [wav]
@@ -166,11 +218,12 @@ def transcribe_guarded(
         kwargs["batch_size"] = batch_size
     texts = model.transcribe(**kwargs)
 
+    separator = module.get_chunk_separator(language)
     kept = []
     for i, (wave, text) in enumerate(zip(chunks, texts)):
-        why = hallucination_reason(wave, text)
+        why = hallucination_reason(wave, text, by_char=separator == "")
         if why:
             print(f"[guard] dropped chunk {i + 1}/{len(chunks)} ({why}): {text[:80]!r}")
         else:
             kept.append(text)
-    return module.join_chunk_texts(kept, module.get_chunk_separator(language))
+    return module.join_chunk_texts(kept, separator)
