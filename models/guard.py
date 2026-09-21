@@ -15,8 +15,8 @@ import re
 import sys
 import threading
 
-import librosa
 import numpy as np
+import soxr
 
 SR = 16000
 RUN_MAX = 4  # back-to-back repeats a real refrain reaches; measured loops: 11+
@@ -184,7 +184,7 @@ def transcribe_guarded(
     if not len(wav):
         return ""
     if sample_rate != SR:
-        wav = librosa.resample(wav, orig_sr=sample_rate, target_sr=SR)
+        wav = soxr.resample(wav, sample_rate, SR)  # what librosa.resample runs, minus its 1.7 s import
     pieces = vad_chunks(wav) if USE_SILERO_VAD else [wav]
     if USE_SILERO_VAD:
         print(
