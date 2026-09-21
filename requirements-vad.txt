@@ -1,0 +1,5 @@
+# Optional: only needed when USE_SILERO_VAD=1. Install without deps so torch/transformers stay untouched:
+#   uv pip install --python cohere_env/bin/python --no-deps -r requirements-vad.txt
+silero-vad==6.2.2
+onnxruntime==1.30.0
+flatbuffers

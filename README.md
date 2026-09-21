@@ -67,6 +67,18 @@ downloaded from the Hub on the first startup and cached under
 | `API_KEY` | No | *(empty)* | Protects endpoints via `X-Api-Key` header. Leave empty to disable auth |
 | `MODEL_ID` | No | `CohereLabs/cohere-transcribe-03-2026` | HuggingFace model ID |
 | `DEVICE` | No | auto | Set to `cpu` to force CPU inference. Ignored while the `DEVICE` constant in `main.py` is not `None` (currently `"cpu"`: the GPU on the deploy box is shared) |
+| `GUARD_CR_MAX` | No | `2.4` | Hallucination guard: a chunk whose text has a zlib compression ratio above this is dropped as a repetition loop |
+| `GUARD_MIN_LOOP_WORDS` | No | `50` | Hallucination guard: the loop rule only applies to chunks with at least this many words, so short sung refrains are kept |
+| `GUARD_RMS_MIN_DB` | No | `-50` | Hallucination guard: a chunk quieter than this (dBFS) is dropped as silence |
+| `USE_SILERO_VAD` | No | `0` | `1` = transcribe only the regions Silero VAD marks as speech. For spoken audio only: Silero rates singing as non-speech and returns an empty transcript for songs. Needs `requirements-vad.txt` |
+| `VAD_THRESHOLD` | No | `0.5` | Silero speech probability threshold |
+
+### Hallucination guard
+
+The model invents text on audio without speech (instrumental intro, silence) and can loop until the token limit. `models/guard.py` transcribes chunk by chunk and drops chunks that are a loop or silent, each drop is logged as `[guard] dropped chunk ...`. Known limits: invented text that does not loop passes through, and a drop removes the whole chunk (up to 35 s).
+
+- Tests (no model, <2 s): `cohere_env/bin/python -m unittest discover -s tests -v`
+- Eval (needs the service up, ~100 s per song): `cohere_env/bin/python evals/eval_hallucination.py song.mp3 --must "chim rừng" --forbid "nghiện"`
 
 ---
 

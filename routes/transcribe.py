@@ -24,6 +24,7 @@ import librosa
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from middleware.auth import verify_api_key
+from models.guard import transcribe_guarded
 from models.loader import get_model, get_processor
 from schemas.request import SUPPORTED_LANGUAGES, TranscribeJsonRequest, TranscribeResponse
 
@@ -44,24 +45,12 @@ def _run_transcription(
     batch_size: Optional[int],
 ) -> str:
     """
-    Synchronous wrapper around model.transcribe().
+    Synchronous wrapper around model.transcribe(), behind the hallucination guard.
     Called via run_in_executor to avoid blocking the async event loop.
     """
-    model = get_model()
-    processor = get_processor()
-
-    kwargs: dict = {
-        "processor": processor,
-        "audio_arrays": [audio_array],
-        "sample_rates": [sample_rate],
-        "language": language,
-        "punctuation": punctuation,
-    }
-    if batch_size is not None:
-        kwargs["batch_size"] = batch_size
-
-    results = model.transcribe(**kwargs)
-    return results[0]
+    return transcribe_guarded(
+        get_model(), get_processor(), audio_array, sample_rate, language, punctuation, batch_size
+    )
 
 
 async def _transcribe_array(
