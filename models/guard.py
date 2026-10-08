@@ -29,6 +29,9 @@ VAD_PAD_S = 0.2
 
 _vad = None
 _vad_lock = threading.Lock()
+# One model is shared by every request thread; overlapping generate calls
+# corrupt its cache (IndexError in index_copy_). One at a time.
+_model_lock = threading.Lock()
 
 
 def find_loop(text, by_char=False):
@@ -216,7 +219,8 @@ def transcribe_guarded(
     }
     if batch_size is not None:
         kwargs["batch_size"] = batch_size
-    texts = model.transcribe(**kwargs)
+    with _model_lock:
+        texts = model.transcribe(**kwargs)
 
     separator = module.get_chunk_separator(language)
     kept = []
