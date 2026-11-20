@@ -15,6 +15,7 @@ class IdleModel:
         self._seconds = seconds
         self._serialize = serialize
         self._loaded = False
+        self._loading = None
         self._lock = asyncio.Lock()
         self._requests = set()
         self._last_finished = 0.0
@@ -49,13 +50,22 @@ class IdleModel:
             task.exception()
 
     async def _run(self, infer, args):
-        async with self._lock:
-            if not self._loaded:
-                await asyncio.to_thread(self._load)
-                self._loaded = True
-            if self._serialize:
+        if not self._loaded:
+            if self._loading is None:
+                self._loading = asyncio.create_task(self._reload())
+            await self._loading
+        if self._serialize:
+            async with self._lock:
                 return await asyncio.to_thread(infer, *args)
         return await asyncio.to_thread(infer, *args)
+
+    async def _reload(self):
+        try:
+            async with self._lock:
+                await asyncio.to_thread(self._load)
+                self._loaded = True
+        finally:
+            self._loading = None
 
     async def _watch(self, stop):
         log = logging.getLogger("uvicorn.error")

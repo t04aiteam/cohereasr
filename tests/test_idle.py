@@ -65,3 +65,32 @@ class IdleModelTests(unittest.IsolatedAsyncioTestCase):
                 await model.run(lambda: None)
             self.assertEqual(await model.run(lambda: 3), 3)
             self.assertEqual(calls, ["load", "unload", "load", "load"])
+
+    async def test_overlapping_requests_share_a_failed_reload(self):
+        calls = []
+        started = threading.Event()
+        finish = threading.Event()
+
+        def load():
+            calls.append("load")
+            if len(calls) == 3:
+                started.set()
+                if not finish.wait(2):
+                    raise TimeoutError("Test load was not released")
+                raise RuntimeError("failed load")
+
+        model = IdleModel(load, lambda: calls.append("unload"), 0.02, serialize=True)
+        async with model.lifespan():
+            await wait_until(lambda: calls == ["load", "unload"])
+            first = asyncio.create_task(model.run(lambda: 1))
+            try:
+                await wait_until(started.is_set)
+                second = asyncio.create_task(model.run(lambda: 2))
+                await wait_until(lambda: len(model._requests) == 2)
+                await asyncio.sleep(0)
+            finally:
+                finish.set()
+            outcomes = await asyncio.gather(first, second, return_exceptions=True)
+            self.assertTrue(all(isinstance(exc, RuntimeError) for exc in outcomes), outcomes)
+            self.assertEqual(calls, ["load", "unload", "load"])
+            self.assertEqual(await model.run(lambda: 3), 3)
