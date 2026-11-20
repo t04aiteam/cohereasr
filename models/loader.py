@@ -1,12 +1,16 @@
 """
 models/loader.py
 Loads the CohereLabs/cohere-transcribe-03-2026 processor and model exactly
-once at startup. All inference routes call get_processor() / get_model().
+at startup and reloads it on the next inference after an idle unload.
 """
 
+import gc
 import os
+from ctypes import CDLL
 import torch
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
+
+from models.idle import IdleModel
 
 MODEL_ID = os.getenv("MODEL_ID", "CohereLabs/cohere-transcribe-03-2026")
 HF_TOKEN = os.getenv("HF_TOKEN")  # required — model is gated
@@ -33,14 +37,34 @@ def load_model(device=None):
         kwargs["token"] = HF_TOKEN
 
     print(f"[loader] Loading processor for {MODEL_ID} …")
-    _processor = AutoProcessor.from_pretrained(MODEL_ID, **kwargs)
+    processor = AutoProcessor.from_pretrained(MODEL_ID, **kwargs)
 
     print(f"[loader] Loading model for {MODEL_ID} on {device} …")
-    _model = AutoModelForSpeechSeq2Seq.from_pretrained(MODEL_ID, **kwargs)
-    _model.to(device)
-    _model.eval()
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(MODEL_ID, **kwargs)
+    model.to(device)
+    model.eval()
+    _model, _processor = model, processor
 
     print("[loader] Model ready.")
+
+
+def unload_model():
+    global _model, _processor
+    _model = _processor = None
+    gc.collect()
+    if torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+    # glibc may retain several GiB of free pages after model loading.
+    trim = getattr(CDLL(None), "malloc_trim", None)
+    if trim is not None:
+        trim(0)
+
+
+idle_model = IdleModel(
+    lambda: load_model(os.environ.get("DEVICE", "cpu")),
+    unload_model,
+    int(os.getenv("MODEL_IDLE_SECONDS", "0")),
+)
 
 
 def get_processor() -> AutoProcessor:

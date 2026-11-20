@@ -28,7 +28,7 @@ def import_main(env):
         The imported main module and the uvicorn.run mock call list.
     """
     loader = types.ModuleType("models.loader")
-    loader.load_model = lambda device: None
+    loader.idle_model = mock.Mock()
     routes = types.ModuleType("routes.transcribe")
     from fastapi import APIRouter
 
