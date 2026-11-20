@@ -5,7 +5,6 @@ supporting 14 languages. Audio is accepted as file upload or base64 payload.
 """
 
 import os
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,19 +15,12 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 load_dotenv()
 
-from models.loader import load_model
+from models.loader import idle_model
 from routes.transcribe import router as transcribe_router
 
 # DEVICE and PORT come from the environment (real env first, then .env).
 # Unset keeps box 222: CPU (its GPU is shared) on 6221. c09 starts with DEVICE=cuda PORT=8000.
 DEVICE = os.environ.get("DEVICE", "cpu")
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Load the model once at startup; release on shutdown."""
-    load_model(DEVICE)
-    yield
 
 
 app = FastAPI(
@@ -38,7 +30,7 @@ app = FastAPI(
         "a 2B-parameter Conformer ASR model supporting 14 languages."
     ),
     version="1.0.0",
-    lifespan=lifespan,
+    lifespan=lambda app: idle_model.lifespan(),
 )
 
 app.add_middleware(

@@ -11,7 +11,6 @@ so the event loop is never blocked.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 import os
@@ -25,7 +24,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from middleware.auth import verify_api_key
 from models.guard import transcribe_guarded
-from models.loader import get_model, get_processor
+from models.loader import get_model, get_processor, idle_model
 from schemas.request import SUPPORTED_LANGUAGES, TranscribeJsonRequest, TranscribeResponse
 
 MODEL_NAME = os.getenv("MODEL_ID", "CohereLabs/cohere-transcribe-03-2026")
@@ -61,9 +60,7 @@ async def _transcribe_array(
     batch_size: Optional[int],
 ) -> TranscribeResponse:
     """Async wrapper: runs blocking inference on the default thread-pool."""
-    loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(
-        None,
+    text = await idle_model.run(
         _run_transcription,
         audio_array,
         sample_rate,
