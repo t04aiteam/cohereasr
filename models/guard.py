@@ -14,11 +14,14 @@ import os
 import re
 import sys
 import threading
+from difflib import SequenceMatcher
 
 import numpy as np
 import soxr
 
 SR = 16000
+CLIP_S = 13
+CLIP_OVERLAP_S = 3
 RUN_MAX = 4  # back-to-back repeats a real refrain reaches; measured loops: 11+
 MIN_LOOP_SPAN = 30  # tokens the repeats must cover, keeps "la la la la la la"
 RMS_MIN_DB = float(os.getenv("GUARD_RMS_MIN_DB", "-50"))
@@ -166,6 +169,60 @@ def vad_chunks(wav):
     ]
 
 
+def overlapping_clips(wave):
+    """Cover the waveform with clips of at most 13 seconds."""
+    size = CLIP_S * SR
+    overlap = CLIP_OVERLAP_S * SR
+    step = size - overlap
+    return [
+        wave[start : start + size]
+        for start in range(0, max(1, len(wave) - overlap), step)
+    ]
+
+
+def strip_seam_overlap(previous, current, by_char, *, bridge=False):
+    """Remove matching text at the seam of two overlapping audio clips."""
+    pattern = r"\w" if by_char else r"\w+"
+    minimum = (6 if by_char else 4) if bridge else (4 if by_char else 2)
+    maximum = 32 if bridge else (24 if by_char else 20)
+    tail = re.findall(pattern, previous)[-maximum:]
+    head = list(re.finditer(pattern, current))[: maximum + 1]
+    left = [token.casefold() for token in tail]
+    right = [token.group().casefold() for token in head]
+    for length in range(min(len(head), maximum), minimum - 1, -1):
+        prefix = right[:length]
+        if left[-length:] == prefix or (
+            not by_char and length >= 6 and near_seam_match(left, prefix)
+        ):
+            if length == len(head):
+                return ""
+            start = head[length].start()
+            between = current[head[length - 1].end() : start]
+            opening = re.search(r'''["'“‘«「『（(\[{]+$''', between)
+            if opening:
+                start -= len(opening.group())
+            return current[start:]
+    return current
+
+
+def near_seam_match(left, prefix):
+    """Allow small ASR differences inside a long, anchored word overlap."""
+    size = len(prefix)
+    for length in range(max(6, size - 2), min(len(left), size + 2) + 1):
+        suffix = left[-length:]
+        if suffix[:2] != prefix[:2]:
+            continue
+        end_matches = suffix[-2:] == prefix[-2:]
+        end_near_match = suffix[-2] == prefix[-2] and (
+            SequenceMatcher(None, suffix[-1], prefix[-1], autojunk=False).ratio() >= 0.7
+        )
+        if (end_matches or end_near_match) and (
+            SequenceMatcher(None, suffix, prefix, autojunk=False).ratio() >= 0.8
+        ):
+            return True
+    return False
+
+
 def transcribe_guarded(
     model, processor, audio_array, sample_rate, language, punctuation, batch_size=None
 ):
@@ -194,40 +251,63 @@ def transcribe_guarded(
             f"[guard] silero kept {sum(len(p) for p in pieces) / SR:.1f}s of {len(wav) / SR:.1f}s"
         )
 
-    cfg = model.config
     module = sys.modules[type(model).__module__]
-    split = module.split_audio_chunks_energy
-    chunks = []
-    # same split model.transcribe() does, so chunks are not re-split
-    for piece in pieces:
-        chunks += split(
-            piece,
-            SR,
-            float(cfg.max_audio_clip_s),
-            float(cfg.overlap_chunk_second),
-            int(cfg.min_energy_window_samples),
-        )
+    groups = [overlapping_clips(piece) for piece in pieces]
+    chunks = [clip for group in groups for clip in group]
     if not chunks:
         return ""
 
     kwargs = {
         "processor": processor,
-        "audio_arrays": chunks,
-        "sample_rates": [SR] * len(chunks),
         "language": language,
         "punctuation": punctuation,
     }
     if batch_size is not None:
         kwargs["batch_size"] = batch_size
-    with _model_lock:
-        texts = model.transcribe(**kwargs)
-
     separator = module.get_chunk_separator(language)
-    kept = []
-    for i, (wave, text) in enumerate(zip(chunks, texts)):
-        why = hallucination_reason(wave, text, by_char=separator == "")
+    by_char = separator == ""
+    accepted = transcribe_clips(model, chunks, kwargs, by_char)
+
+    merged = []
+    retries = []
+    offset = 0
+    for piece, group in zip(pieces, groups, strict=True):
+        previous = ""
+        for i, text in enumerate(accepted[offset : offset + len(group)]):
+            joined = strip_seam_overlap(previous, text, by_char)
+            if previous and text and joined == text:
+                # Shift the clip left of this seam to add context on both sides.
+                seam = i * (CLIP_S - CLIP_OVERLAP_S)
+                start = (seam - CLIP_OVERLAP_S - 1) * SR
+                clip = piece[start : start + CLIP_S * SR]
+                retries.append((len(merged), previous, text, clip))
+            merged.append(joined)
+            previous = text
+        offset += len(group)
+
+    if retries:
+        bridges = transcribe_clips(model, [item[3] for item in retries], kwargs, by_char)
+        for (index, previous, text, _), bridge in zip(retries, bridges, strict=True):
+            # Insert new words only when the retry aligns with both neighbors.
+            middle = strip_seam_overlap(previous, bridge, by_char, bridge=True)
+            following = strip_seam_overlap(bridge, text, by_char, bridge=True)
+            if middle and middle != bridge and following != text:
+                merged[index] = module.join_chunk_texts([middle, following], separator)
+
+    return module.join_chunk_texts(merged, separator)
+
+
+def transcribe_clips(model, chunks, options, by_char):
+    """Decode in order and keep a placeholder for any rejected clip."""
+    with _model_lock:
+        texts = model.transcribe(
+            audio_arrays=chunks, sample_rates=[SR] * len(chunks), **options
+        )
+
+    accepted = []
+    for i, (wave, text) in enumerate(zip(chunks, texts, strict=True)):
+        why = hallucination_reason(wave, text, by_char)
         if why:
             print(f"[guard] dropped chunk {i + 1}/{len(chunks)} ({why}): {text[:80]!r}")
-        else:
-            kept.append(text)
-    return module.join_chunk_texts(kept, separator)
+        accepted.append("" if why else text)
+    return accepted
