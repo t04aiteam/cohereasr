@@ -81,7 +81,7 @@ async def _transcribe_array(
     summary="Transcribe an uploaded audio file",
     description=(
         "Upload an audio file (wav, mp3, flac, ogg, …) and receive its transcription. "
-        "Audio longer than 35 s is automatically chunked. "
+        "Audio longer than 13 s is split into overlapping clips and merged. "
         "Requires `X-Api-Key` header when `API_KEY` env var is set."
     ),
     dependencies=[Depends(verify_api_key)],

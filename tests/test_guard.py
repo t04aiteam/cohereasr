@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -20,22 +21,6 @@ from models import guard  # noqa: E402
 LOOP = "Một số người nghiện rõ ràng là " + "một người nghiện rõ ràng là " * 40
 LYRIC = "nhà em ở lưng đồi nơi chim rừng thanh thót bầu trời xanh dịu ngọt gió tràn về mênh mang"
 LOUD = np.full(guard.SR, 0.1, np.float32)
-
-
-def split_audio_chunks_energy(wav, sr, max_s, overlap_s, min_window):
-    """Stand in for the model's splitter: fixed 1 s chunks.
-
-    Args:
-        wav: Waveform.
-        sr: Sample rate.
-        max_s: Unused.
-        overlap_s: Unused.
-        min_window: Unused.
-
-    Returns:
-        List of 1 s waveforms.
-    """
-    return [wav[i : i + sr] for i in range(0, len(wav), sr)]
 
 
 def join_chunk_texts(texts, separator=" "):
@@ -63,22 +48,8 @@ def get_chunk_separator(language):
     return "" if language in ("zh", "ja") else " "
 
 
-class FakeConfig:
-    """Chunking config the guard reads."""
-
-    max_audio_clip_s = 35
-    """Longest chunk in seconds."""
-    overlap_chunk_second = 5
-    """Split search window."""
-    min_energy_window_samples = 1600
-    """Energy window."""
-
-
 class FakeModel:
     """Model whose remote-code module is this test module."""
-
-    config = FakeConfig()
-    """Config stub."""
 
     def __init__(self, texts):
         self.texts = texts
@@ -206,7 +177,7 @@ class TranscribeGuardedTest(unittest.TestCase):
         """Regression for NhaEmOLungDoi.mp3: intro loop removed, lyrics kept."""
         model = FakeModel([LOOP, LYRIC, "em về nơi lưng đồi"])
         text = guard.transcribe_guarded(
-            model, "proc", np.tile(LOUD, 3), guard.SR, "vi", True
+            model, "proc", np.tile(LOUD, 24), guard.SR, "vi", True
         )
         self.assertEqual(text, LYRIC + " em về nơi lưng đồi")
         self.assertEqual(len(model.calls[0]["audio_arrays"]), 3)
@@ -216,7 +187,7 @@ class TranscribeGuardedTest(unittest.TestCase):
         """A 32 kHz input reaches the model as 16 kHz chunks."""
         model = FakeModel(["a b c", "d e f"])
         guard.transcribe_guarded(
-            model, "proc", np.tile(LOUD, 4), 32000, "vi", True, batch_size=2
+            model, "proc", np.tile(LOUD, 46), 32000, "vi", True, batch_size=2
         )
         call = model.calls[0]
         self.assertEqual(
@@ -229,10 +200,61 @@ class TranscribeGuardedTest(unittest.TestCase):
         model = FakeModel(["你好", "世界"])
         self.assertEqual(
             guard.transcribe_guarded(
-                model, "proc", np.tile(LOUD, 2), guard.SR, "zh", True
+                model, "proc", np.tile(LOUD, 14), guard.SR, "zh", True
             ),
             "你好世界",
         )
+
+    def test_overlapping_clips_cover_audio_and_merge_in_order(self):
+        wave = np.linspace(0.05, 0.1, 25 * guard.SR, dtype=np.float32)
+        model = FakeModel(["Hôm nay ở Hà Nội", "Hà Nội, trời mưa", "Trời mưa lớn."])
+        result = guard.transcribe_guarded(model, "proc", wave, guard.SR, "vi", True)
+        self.assertEqual(result, "Hôm nay ở Hà Nội trời mưa lớn.")
+        clips = model.calls[0]["audio_arrays"]
+        self.assertEqual([len(clip) for clip in clips], [13 * guard.SR] * 2 + [5 * guard.SR])
+        np.testing.assert_array_equal(clips[0][-3 * guard.SR :], clips[1][:3 * guard.SR])
+        np.testing.assert_array_equal(clips[2], wave[20 * guard.SR :])
+
+    def test_merges_an_overlap_with_a_minor_recognition_difference(self):
+        left = "nhắc lại trước đó công an tp phát hiện các video đăng tải trên"
+        right = "trước đó công an thành phố phát hiện các video đăng tải trên tài khoản"
+        self.assertEqual(guard.strip_seam_overlap(left, right, False), "tài khoản")
+        self.assertEqual(
+            guard.strip_seam_overlap(left, "trước đó công an mở rộng điều tra", False),
+            "trước đó công an mở rộng điều tra",
+        )
+
+    def test_repairs_a_gap_only_with_two_matching_anchors(self):
+        before = "trước đó công an xác minh"
+        after = "vụ việc là lời cảnh báo cho người dân"
+        model = FakeModel([])
+        wave = np.tile(LOUD, 20)
+        bridge = "công an xác minh tài khoản mới vụ việc là lời cảnh báo"
+        with patch.object(model, "transcribe", side_effect=[[before, after], [bridge]]):
+            result = guard.transcribe_guarded(model, "proc", wave, guard.SR, "vi", True)
+        self.assertEqual(result, before + " tài khoản mới " + after)
+
+        bridge = "công an xác minh có một tài khoản chưa rõ"
+        with patch.object(model, "transcribe", side_effect=[[before, after], [bridge]]):
+            result = guard.transcribe_guarded(model, "proc", wave, guard.SR, "vi", True)
+        self.assertEqual(result, before + " " + after)
+
+    def test_merge_preserves_the_next_sentences_opening_quote(self):
+        result = guard.strip_seam_overlap(
+            "mưa ở Hà Nội.", "Hà Nội. “Ngày mai trời nắng”", False
+        )
+        self.assertEqual(result, "“Ngày mai trời nắng”")
+        result = guard.strip_seam_overlap(
+            "mưa ở Hà Nội.", "Hà Nội.” Ngày mai trời nắng", False
+        )
+        self.assertEqual(result, "Ngày mai trời nắng")
+
+    def test_dropped_clip_breaks_the_merge_seam(self):
+        model = FakeModel(["trời mưa", LOOP, "trời mưa tiếp"])
+        result = guard.transcribe_guarded(
+            model, "proc", np.tile(LOUD, 24), guard.SR, "vi", True
+        )
+        self.assertEqual(result, "trời mưa trời mưa tiếp")
 
     def test_empty_audio(self):
         """Zero-length audio returns an empty string without calling the model."""
