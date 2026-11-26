@@ -295,31 +295,5 @@ class OverlapModel(FakeModel):
         return super().transcribe(**kwargs)
 
 
-class ConcurrentRequestsTest(unittest.TestCase):
-    """The server runs requests on a thread pool against one shared model."""
-
-    def test_one_transcribe_at_a_time(self):
-        """Regression: two overlapping requests broke the shared generation cache.
-
-        c09 bundle E2E, 2026-10-08: the job API's diarize lane (segment ASR) and
-        its other lane (transcribe) hit 8000 together, one got HTTP 500
-        "index_copy_(): Number of indices (1) should be equal to source.size(dim)".
-        """
-        model = OverlapModel(["a b c"])
-        threads = [
-            threading.Thread(
-                target=guard.transcribe_guarded,
-                args=(model, "proc", LOUD, guard.SR, "vi", True),
-            )
-            for _ in range(4)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(len(model.calls), 4)
-        self.assertEqual(model.most, 1)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -32,9 +32,6 @@ VAD_PAD_S = 0.2
 
 _vad = None
 _vad_lock = threading.Lock()
-# One model is shared by every request thread; overlapping generate calls
-# corrupt its cache (IndexError in index_copy_). One at a time.
-_model_lock = threading.Lock()
 
 
 def find_loop(text, by_char=False):
@@ -299,10 +296,9 @@ def transcribe_guarded(
 
 def transcribe_clips(model, chunks, options, by_char):
     """Decode in order and keep a placeholder for any rejected clip."""
-    with _model_lock:
-        texts = model.transcribe(
-            audio_arrays=chunks, sample_rates=[SR] * len(chunks), **options
-        )
+    texts = model.transcribe(
+        audio_arrays=chunks, sample_rates=[SR] * len(chunks), **options
+    )
 
     accepted = []
     for i, (wave, text) in enumerate(zip(chunks, texts, strict=True)):

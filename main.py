@@ -30,7 +30,7 @@ app = FastAPI(
         "a 2B-parameter Conformer ASR model supporting 14 languages."
     ),
     version="1.0.0",
-    lifespan=lambda app: idle_model.lifespan(),
+    lifespan=lambda app: idle_model.lifespan(preload=True),
 )
 
 app.add_middleware(
